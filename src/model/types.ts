@@ -19,12 +19,10 @@ export interface Relationship {
   position: { x: number; y: number };
 }
 
-export type AttributeFlag = "key" | "partialKey" | "derived" | "multivalued";
-
 export interface Attribute {
   id: NodeId;
   name: string;
-  flags: ReadonlySet<AttributeFlag>;
+  unique: boolean;
   position: { x: number; y: number };
 }
 
@@ -34,7 +32,6 @@ export interface ParticipationEdge {
   entityId: NodeId;
   relationshipId: NodeId;
   cardinality: Cardinality;
-  total: boolean;
 }
 
 export interface EntityAttributeEdge {

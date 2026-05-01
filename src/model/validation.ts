@@ -17,11 +17,9 @@ export type ValidationError =
   | { code: "INVALID_CARDINALITY"; reason: string }
   | { code: "ATTRIBUTE_HAS_NO_OWNER"; attributeId: NodeId }
   | { code: "ATTRIBUTE_HAS_MULTIPLE_OWNERS"; attributeId: NodeId }
-  | { code: "MULTIPLE_KEYS"; entityId: NodeId }
-  | { code: "PARTIAL_KEY_REQUIRES_WEAK_ENTITY"; attributeId: NodeId }
-  | { code: "KEY_AND_PARTIAL_KEY"; attributeId: NodeId }
-  | { code: "DERIVED_AND_MULTIVALUED"; attributeId: NodeId }
+  | { code: "MULTIPLE_UNIQUE"; entityId: NodeId }
   | { code: "WEAK_ENTITY_NEEDS_IDENTIFYING_RELATIONSHIP"; entityId: NodeId }
+  | { code: "IDENTIFYING_RELATIONSHIP_NEEDS_WEAK_ENTITY"; relationshipId: NodeId }
   | { code: "RELATIONSHIP_NEEDS_TWO_ENTITIES"; relationshipId: NodeId };
 
 export const isValidCardinality = (c: Cardinality): boolean => {
@@ -34,10 +32,7 @@ export const isValidCardinality = (c: Cardinality): boolean => {
   return false;
 };
 
-const ownersOfAttribute = (
-  model: ERDModel,
-  attributeId: NodeId,
-): Edge[] =>
+const ownersOfAttribute = (model: ERDModel, attributeId: NodeId): Edge[] =>
   Object.values(model.edges).filter(
     (e) =>
       (e.kind === "entityAttribute" || e.kind === "relationshipAttribute") &&
@@ -47,7 +42,7 @@ const ownersOfAttribute = (
 export const attributeHasOwner = (model: ERDModel, attributeId: NodeId): boolean =>
   ownersOfAttribute(model, attributeId).length > 0;
 
-export const entityKeyAttributes = (
+export const entityUniqueAttributes = (
   model: ERDModel,
   entityId: NodeId,
 ): Attribute[] => {
@@ -56,9 +51,7 @@ export const entityKeyAttributes = (
       .filter((e) => e.kind === "entityAttribute" && e.entityId === entityId)
       .map((e) => (e as { attributeId: NodeId }).attributeId),
   );
-  return Object.values(model.attributes).filter(
-    (a) => ids.has(a.id) && a.flags.has("key"),
-  );
+  return Object.values(model.attributes).filter((a) => ids.has(a.id) && a.unique);
 };
 
 export const relationshipParticipants = (
@@ -115,23 +108,16 @@ export const validateModel = (model: ERDModel): ValidationError[] => {
       errors.push({ code: "ATTRIBUTE_HAS_NO_OWNER", attributeId: a.id });
     if (owners.length > 1)
       errors.push({ code: "ATTRIBUTE_HAS_MULTIPLE_OWNERS", attributeId: a.id });
-    if (a.flags.has("key") && a.flags.has("partialKey"))
-      errors.push({ code: "KEY_AND_PARTIAL_KEY", attributeId: a.id });
-    if (a.flags.has("derived") && a.flags.has("multivalued"))
-      errors.push({ code: "DERIVED_AND_MULTIVALUED", attributeId: a.id });
-    if (a.flags.has("partialKey")) {
-      const owner = owners[0];
-      const isWeakEntityOwner =
-        owner?.kind === "entityAttribute" &&
-        model.entities[owner.entityId]?.weak === true;
-      if (!isWeakEntityOwner)
-        errors.push({ code: "PARTIAL_KEY_REQUIRES_WEAK_ENTITY", attributeId: a.id });
-    }
+    if (a.unique && owners[0]?.kind === "relationshipAttribute")
+      errors.push({
+        code: "ILLEGAL_EDGE",
+        reason: "relationship attribute cannot be unique",
+      });
   }
 
   for (const e of Object.values(model.entities)) {
-    if (entityKeyAttributes(model, e.id).length > 1)
-      errors.push({ code: "MULTIPLE_KEYS", entityId: e.id });
+    if (entityUniqueAttributes(model, e.id).length > 1)
+      errors.push({ code: "MULTIPLE_UNIQUE", entityId: e.id });
     if (e.weak && identifyingRelationshipsFor(model, e.id).length === 0)
       errors.push({
         code: "WEAK_ENTITY_NEEDS_IDENTIFYING_RELATIONSHIP",
@@ -140,8 +126,14 @@ export const validateModel = (model: ERDModel): ValidationError[] => {
   }
 
   for (const r of Object.values(model.relationships)) {
-    if (relationshipParticipants(model, r.id).length < 2)
+    const parts = relationshipParticipants(model, r.id);
+    if (parts.length < 2)
       errors.push({ code: "RELATIONSHIP_NEEDS_TWO_ENTITIES", relationshipId: r.id });
+    if (r.identifying && !parts.some((p) => p.weak))
+      errors.push({
+        code: "IDENTIFYING_RELATIONSHIP_NEEDS_WEAK_ENTITY",
+        relationshipId: r.id,
+      });
   }
 
   for (const edge of Object.values(model.edges)) {

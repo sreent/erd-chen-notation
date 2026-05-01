@@ -1,6 +1,5 @@
 import {
   Attribute,
-  AttributeFlag,
   Cardinality,
   Edge,
   Entity,
@@ -10,8 +9,8 @@ import {
 } from "./types";
 import { isValidCardinality, ValidationError } from "./validation";
 
-export type ActionResult<T = ERDModel> =
-  | { ok: true; model: T }
+export type ActionResult =
+  | { ok: true; model: ERDModel }
   | { ok: false; error: ValidationError };
 
 const fail = (error: ValidationError): ActionResult => ({ ok: false, error });
@@ -84,7 +83,7 @@ export const addAttribute = (
   model: ERDModel,
   input: {
     name: string;
-    flags?: AttributeFlag[];
+    unique?: boolean;
     position?: { x: number; y: number };
   },
 ): ActionResult => {
@@ -92,15 +91,10 @@ export const addAttribute = (
   if (!name) return fail({ code: "EMPTY_NAME", scope: "attribute" });
   if (nameTaken(model, "attribute", name))
     return fail({ code: "DUPLICATE_NAME", scope: "attribute", name });
-  const flagSet = new Set(input.flags ?? []);
-  if (flagSet.has("key") && flagSet.has("partialKey"))
-    return fail({ code: "KEY_AND_PARTIAL_KEY", attributeId: "(new)" });
-  if (flagSet.has("derived") && flagSet.has("multivalued"))
-    return fail({ code: "DERIVED_AND_MULTIVALUED", attributeId: "(new)" });
   const a: Attribute = {
     id: newId(),
     name,
-    flags: flagSet,
+    unique: input.unique ?? false,
     position: input.position ?? { x: 0, y: 0 },
   };
   return ok({ ...model, attributes: { ...model.attributes, [a.id]: a } });
@@ -109,13 +103,20 @@ export const addAttribute = (
 const edgeExists = (model: ERDModel, predicate: (e: Edge) => boolean): boolean =>
   Object.values(model.edges).some(predicate);
 
+const attributeAlreadyOwned = (model: ERDModel, attributeId: NodeId): boolean =>
+  edgeExists(
+    model,
+    (e) =>
+      (e.kind === "entityAttribute" || e.kind === "relationshipAttribute") &&
+      e.attributeId === attributeId,
+  );
+
 export const connectEntityToRelationship = (
   model: ERDModel,
   input: {
     entityId: NodeId;
     relationshipId: NodeId;
     cardinality: Cardinality;
-    total?: boolean;
   },
 ): ActionResult => {
   if (!model.entities[input.entityId])
@@ -143,7 +144,6 @@ export const connectEntityToRelationship = (
     entityId: input.entityId,
     relationshipId: input.relationshipId,
     cardinality: input.cardinality,
-    total: input.total ?? false,
   };
   return ok({ ...model, edges: { ...model.edges, [edge.id]: edge } });
 };
@@ -156,36 +156,21 @@ export const attachAttributeToEntity = (
     return fail({ code: "UNKNOWN_NODE", id: input.entityId });
   const attr = model.attributes[input.attributeId];
   if (!attr) return fail({ code: "UNKNOWN_NODE", id: input.attributeId });
-  if (
-    edgeExists(
-      model,
-      (e) =>
-        (e.kind === "entityAttribute" || e.kind === "relationshipAttribute") &&
-        e.attributeId === input.attributeId,
-    )
-  )
+  if (attributeAlreadyOwned(model, input.attributeId))
     return fail({
       code: "ATTRIBUTE_HAS_MULTIPLE_OWNERS",
       attributeId: input.attributeId,
     });
-  if (attr.flags.has("key")) {
-    const existingKey = Object.values(model.edges).some(
+  if (attr.unique) {
+    const existingUnique = Object.values(model.edges).some(
       (e) =>
         e.kind === "entityAttribute" &&
         e.entityId === input.entityId &&
-        model.attributes[e.attributeId]?.flags.has("key"),
+        model.attributes[e.attributeId]?.unique,
     );
-    if (existingKey)
-      return fail({ code: "MULTIPLE_KEYS", entityId: input.entityId });
+    if (existingUnique)
+      return fail({ code: "MULTIPLE_UNIQUE", entityId: input.entityId });
   }
-  if (
-    attr.flags.has("partialKey") &&
-    !model.entities[input.entityId].weak
-  )
-    return fail({
-      code: "PARTIAL_KEY_REQUIRES_WEAK_ENTITY",
-      attributeId: input.attributeId,
-    });
   const edge: Edge = {
     id: newId(),
     kind: "entityAttribute",
@@ -203,19 +188,12 @@ export const attachAttributeToRelationship = (
     return fail({ code: "UNKNOWN_NODE", id: input.relationshipId });
   const attr = model.attributes[input.attributeId];
   if (!attr) return fail({ code: "UNKNOWN_NODE", id: input.attributeId });
-  if (attr.flags.has("key") || attr.flags.has("partialKey"))
+  if (attr.unique)
     return fail({
       code: "ILLEGAL_EDGE",
-      reason: "key/partial-key attribute can only attach to an entity",
+      reason: "unique attribute can only attach to an entity",
     });
-  if (
-    edgeExists(
-      model,
-      (e) =>
-        (e.kind === "entityAttribute" || e.kind === "relationshipAttribute") &&
-        e.attributeId === input.attributeId,
-    )
-  )
+  if (attributeAlreadyOwned(model, input.attributeId))
     return fail({
       code: "ATTRIBUTE_HAS_MULTIPLE_OWNERS",
       attributeId: input.attributeId,
@@ -248,23 +226,6 @@ export const setCardinality = (
       ...model.edges,
       [edge.id]: { ...edge, cardinality: input.cardinality },
     },
-  });
-};
-
-export const setParticipationTotal = (
-  model: ERDModel,
-  input: { edgeId: NodeId; total: boolean },
-): ActionResult => {
-  const edge = model.edges[input.edgeId];
-  if (!edge) return fail({ code: "UNKNOWN_NODE", id: input.edgeId });
-  if (edge.kind !== "participation")
-    return fail({
-      code: "ILLEGAL_EDGE",
-      reason: "total participation only applies to entity-relationship edges",
-    });
-  return ok({
-    ...model,
-    edges: { ...model.edges, [edge.id]: { ...edge, total: input.total } },
   });
 };
 
@@ -307,50 +268,40 @@ export const renameNode = (
   });
 };
 
-export const setAttributeFlags = (
+export const setAttributeUnique = (
   model: ERDModel,
-  input: { attributeId: NodeId; flags: AttributeFlag[] },
+  input: { attributeId: NodeId; unique: boolean },
 ): ActionResult => {
   const attr = model.attributes[input.attributeId];
   if (!attr) return fail({ code: "UNKNOWN_NODE", id: input.attributeId });
-  const flags = new Set(input.flags);
-  if (flags.has("key") && flags.has("partialKey"))
-    return fail({ code: "KEY_AND_PARTIAL_KEY", attributeId: attr.id });
-  if (flags.has("derived") && flags.has("multivalued"))
-    return fail({ code: "DERIVED_AND_MULTIVALUED", attributeId: attr.id });
   const ownerEdge = Object.values(model.edges).find(
     (e) =>
       (e.kind === "entityAttribute" || e.kind === "relationshipAttribute") &&
       e.attributeId === attr.id,
   );
-  if (ownerEdge?.kind === "relationshipAttribute" && (flags.has("key") || flags.has("partialKey")))
-    return fail({
-      code: "ILLEGAL_EDGE",
-      reason: "relationship attributes cannot be keys",
-    });
-  if (ownerEdge?.kind === "entityAttribute") {
-    const owner = model.entities[ownerEdge.entityId];
-    if (flags.has("partialKey") && !owner.weak)
+  if (input.unique) {
+    if (ownerEdge?.kind === "relationshipAttribute")
       return fail({
-        code: "PARTIAL_KEY_REQUIRES_WEAK_ENTITY",
-        attributeId: attr.id,
+        code: "ILLEGAL_EDGE",
+        reason: "relationship attribute cannot be unique",
       });
-    if (flags.has("key")) {
-      const otherKey = Object.values(model.edges).some(
+    if (ownerEdge?.kind === "entityAttribute") {
+      const otherUnique = Object.values(model.edges).some(
         (e) =>
           e.kind === "entityAttribute" &&
-          e.entityId === owner.id &&
+          e.entityId === ownerEdge.entityId &&
           e.attributeId !== attr.id &&
-          model.attributes[e.attributeId]?.flags.has("key"),
+          model.attributes[e.attributeId]?.unique,
       );
-      if (otherKey) return fail({ code: "MULTIPLE_KEYS", entityId: owner.id });
+      if (otherUnique)
+        return fail({ code: "MULTIPLE_UNIQUE", entityId: ownerEdge.entityId });
     }
   }
   return ok({
     ...model,
     attributes: {
       ...model.attributes,
-      [attr.id]: { ...attr, flags },
+      [attr.id]: { ...attr, unique: input.unique },
     },
   });
 };
@@ -361,24 +312,26 @@ export const setEntityWeak = (
 ): ActionResult => {
   const e = model.entities[input.entityId];
   if (!e) return fail({ code: "UNKNOWN_NODE", id: input.entityId });
-  if (!input.weak) {
-    const ownsPartialKey = Object.values(model.edges).some(
-      (edge) =>
-        edge.kind === "entityAttribute" &&
-        edge.entityId === e.id &&
-        model.attributes[edge.attributeId]?.flags.has("partialKey"),
-    );
-    if (ownsPartialKey)
-      return fail({
-        code: "ILLEGAL_EDGE",
-        reason: "remove partial-key attribute before unsetting weak",
-      });
-  }
   return ok({
     ...model,
     entities: {
       ...model.entities,
       [e.id]: { ...e, weak: input.weak },
+    },
+  });
+};
+
+export const setRelationshipIdentifying = (
+  model: ERDModel,
+  input: { relationshipId: NodeId; identifying: boolean },
+): ActionResult => {
+  const r = model.relationships[input.relationshipId];
+  if (!r) return fail({ code: "UNKNOWN_NODE", id: input.relationshipId });
+  return ok({
+    ...model,
+    relationships: {
+      ...model.relationships,
+      [r.id]: { ...r, identifying: input.identifying },
     },
   });
 };
@@ -408,16 +361,6 @@ export const removeNode = (
         (e.relationshipId === id || e.attributeId === id))
     ) {
       delete next.edges[edgeId];
-    }
-  }
-  if (next.attributes[id] === undefined && model.attributes[id] === undefined) {
-    for (const a of Object.values(next.attributes)) {
-      const stillOwned = Object.values(next.edges).some(
-        (e) =>
-          (e.kind === "entityAttribute" || e.kind === "relationshipAttribute") &&
-          e.attributeId === a.id,
-      );
-      if (!stillOwned) delete next.attributes[a.id];
     }
   }
   return ok(next);
