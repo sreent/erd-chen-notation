@@ -1,9 +1,7 @@
 export type NodeId = string;
 
-export type Cardinality =
-  | { kind: "one" }
-  | { kind: "many"; symbol: "N" | "M" }
-  | { kind: "minMax"; min: number; max: number | "N" };
+export type Participation = "mandatory" | "optional" | "unspecified";
+export type Cardinality = "one" | "many" | "unspecified";
 
 export interface Entity {
   id: NodeId;
@@ -31,7 +29,9 @@ export interface ParticipationEdge {
   kind: "participation";
   entityId: NodeId;
   relationshipId: NodeId;
+  participation: Participation;
   cardinality: Cardinality;
+  role: string;
 }
 
 export interface EntityAttributeEdge {
@@ -66,3 +66,13 @@ export const emptyModel = (): ERDModel => ({
   attributes: {},
   edges: {},
 });
+
+export const cardinalityLabel = (
+  participation: Participation,
+  cardinality: Cardinality,
+): string | null => {
+  if (participation === "unspecified" || cardinality === "unspecified") return null;
+  const min = participation === "mandatory" ? 1 : 0;
+  const max = cardinality === "many" ? "N" : 1;
+  return `(${min},${max})`;
+};

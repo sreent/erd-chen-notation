@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as A from "./actions";
-import { emptyModel, ERDModel } from "./types";
+import { cardinalityLabel, emptyModel, ERDModel } from "./types";
 import { validateModel } from "./validation";
 
 const must = (r: A.ActionResult): ERDModel => {
@@ -20,7 +20,7 @@ const setup = () => {
   return m;
 };
 
-describe("entity/relationship/attribute creation", () => {
+describe("naming", () => {
   it("rejects empty names", () => {
     expect(fail(A.addEntity(emptyModel(), { name: "  " })).code).toBe("EMPTY_NAME");
   });
@@ -28,6 +28,19 @@ describe("entity/relationship/attribute creation", () => {
     let m = must(A.addEntity(emptyModel(), { name: "X" }));
     expect(fail(A.addEntity(m, { name: "X" })).code).toBe("DUPLICATE_NAME");
     m = must(A.addRelationship(m, { name: "X" }));
+  });
+});
+
+describe("cardinality label", () => {
+  it("renders (min,max) when both sides specified", () => {
+    expect(cardinalityLabel("mandatory", "many")).toBe("(1,N)");
+    expect(cardinalityLabel("optional", "one")).toBe("(0,1)");
+    expect(cardinalityLabel("mandatory", "one")).toBe("(1,1)");
+    expect(cardinalityLabel("optional", "many")).toBe("(0,N)");
+  });
+  it("returns null when either side is unspecified", () => {
+    expect(cardinalityLabel("unspecified", "many")).toBeNull();
+    expect(cardinalityLabel("mandatory", "unspecified")).toBeNull();
   });
 });
 
@@ -39,57 +52,46 @@ describe("connect entity ↔ relationship", () => {
         A.connectEntityToRelationship(m, {
           entityId: "missing",
           relationshipId: Object.values(m.relationships)[0].id,
-          cardinality: { kind: "many", symbol: "N" },
         }),
       ).code,
     ).toBe("UNKNOWN_NODE");
   });
-  it("rejects duplicate participation", () => {
+  it("creates participation with defaults", () => {
     let m = setup();
     const eId = Object.values(m.entities)[0].id;
     const rId = Object.values(m.relationships)[0].id;
     m = must(
-      A.connectEntityToRelationship(m, {
-        entityId: eId,
-        relationshipId: rId,
-        cardinality: { kind: "many", symbol: "N" },
-      }),
+      A.connectEntityToRelationship(m, { entityId: eId, relationshipId: rId }),
     );
-    expect(
-      fail(
-        A.connectEntityToRelationship(m, {
-          entityId: eId,
-          relationshipId: rId,
-          cardinality: { kind: "one" },
-        }),
-      ).code,
-    ).toBe("DUPLICATE_EDGE");
+    const edge = Object.values(m.edges)[0];
+    expect(edge.kind).toBe("participation");
+    if (edge.kind === "participation") {
+      expect(edge.participation).toBe("unspecified");
+      expect(edge.cardinality).toBe("unspecified");
+      expect(edge.role).toBe("");
+    }
   });
-  it("rejects invalid (min,max) cardinality", () => {
-    const m = setup();
-    const [e, _e2] = Object.values(m.entities);
-    const r = Object.values(m.relationships)[0];
-    expect(
-      fail(
-        A.connectEntityToRelationship(m, {
-          entityId: e.id,
-          relationshipId: r.id,
-          cardinality: { kind: "minMax", min: 5, max: 2 },
-        }),
-      ).code,
-    ).toBe("INVALID_CARDINALITY");
+  it("sets cardinality and role", () => {
+    let m = setup();
+    const eId = Object.values(m.entities)[0].id;
+    const rId = Object.values(m.relationships)[0].id;
+    m = must(
+      A.connectEntityToRelationship(m, { entityId: eId, relationshipId: rId }),
+    );
+    const edgeId = Object.values(m.edges)[0].id;
+    m = must(A.setParticipation(m, { edgeId, participation: "mandatory" }));
+    m = must(A.setCardinality(m, { edgeId, cardinality: "many" }));
+    m = must(A.setRole(m, { edgeId, role: "enrolee" }));
+    const e = m.edges[edgeId];
+    if (e.kind === "participation") {
+      expect(e.participation).toBe("mandatory");
+      expect(e.cardinality).toBe("many");
+      expect(e.role).toBe("enrolee");
+    }
   });
 });
 
 describe("attribute attachment", () => {
-  it("attaches to entity", () => {
-    let m = setup();
-    m = must(A.addAttribute(m, { name: "id", unique: true }));
-    const eId = Object.values(m.entities)[0].id;
-    const aId = Object.values(m.attributes)[0].id;
-    m = must(A.attachAttributeToEntity(m, { entityId: eId, attributeId: aId }));
-    expect(Object.values(m.edges)).toHaveLength(1);
-  });
   it("rejects double-owning an attribute", () => {
     let m = setup();
     m = must(A.addAttribute(m, { name: "name" }));
@@ -129,16 +131,16 @@ describe("attribute attachment", () => {
 
 describe("model validation", () => {
   it("flags weak entity without identifying relationship", () => {
-    let m = must(A.addEntity(emptyModel(), { name: "Dependent", weak: true }));
+    const m = must(A.addEntity(emptyModel(), { name: "Dependent", weak: true }));
     const errs = validateModel(m);
     expect(errs.some((e) => e.code === "WEAK_ENTITY_NEEDS_IDENTIFYING_RELATIONSHIP")).toBe(true);
   });
   it("flags relationship with fewer than two participants", () => {
-    let m = setup();
+    const m = setup();
     const errs = validateModel(m);
     expect(errs.some((e) => e.code === "RELATIONSHIP_NEEDS_TWO_ENTITIES")).toBe(true);
   });
-  it("flags identifying relationship with no weak entity participant", () => {
+  it("flags identifying relationship with no weak participant", () => {
     let m = setup();
     m = must(
       A.setRelationshipIdentifying(m, {
@@ -148,25 +150,13 @@ describe("model validation", () => {
     );
     const [e1, e2] = Object.values(m.entities);
     const r = Object.values(m.relationships)[0];
-    m = must(
-      A.connectEntityToRelationship(m, {
-        entityId: e1.id,
-        relationshipId: r.id,
-        cardinality: { kind: "one" },
-      }),
-    );
-    m = must(
-      A.connectEntityToRelationship(m, {
-        entityId: e2.id,
-        relationshipId: r.id,
-        cardinality: { kind: "many", symbol: "N" },
-      }),
-    );
+    m = must(A.connectEntityToRelationship(m, { entityId: e1.id, relationshipId: r.id }));
+    m = must(A.connectEntityToRelationship(m, { entityId: e2.id, relationshipId: r.id }));
     const errs = validateModel(m);
     expect(errs.some((e) => e.code === "IDENTIFYING_RELATIONSHIP_NEEDS_WEAK_ENTITY")).toBe(true);
   });
   it("flags orphan attribute", () => {
-    let m = must(A.addAttribute(emptyModel(), { name: "lonely" }));
+    const m = must(A.addAttribute(emptyModel(), { name: "lonely" }));
     const errs = validateModel(m);
     expect(errs.some((e) => e.code === "ATTRIBUTE_HAS_NO_OWNER")).toBe(true);
   });
@@ -179,13 +169,7 @@ describe("removal cascades edges", () => {
     const eId = Object.values(m.entities)[0].id;
     const rId = Object.values(m.relationships)[0].id;
     const aId = Object.values(m.attributes)[0].id;
-    m = must(
-      A.connectEntityToRelationship(m, {
-        entityId: eId,
-        relationshipId: rId,
-        cardinality: { kind: "one" },
-      }),
-    );
+    m = must(A.connectEntityToRelationship(m, { entityId: eId, relationshipId: rId }));
     m = must(A.attachAttributeToEntity(m, { entityId: eId, attributeId: aId }));
     expect(Object.values(m.edges)).toHaveLength(2);
     m = must(A.removeNode(m, { id: eId }));

@@ -1,6 +1,5 @@
 import {
   Attribute,
-  Cardinality,
   Edge,
   Entity,
   ERDModel,
@@ -14,23 +13,12 @@ export type ValidationError =
   | { code: "UNKNOWN_NODE"; id: NodeId }
   | { code: "ILLEGAL_EDGE"; reason: string }
   | { code: "DUPLICATE_EDGE"; reason: string }
-  | { code: "INVALID_CARDINALITY"; reason: string }
   | { code: "ATTRIBUTE_HAS_NO_OWNER"; attributeId: NodeId }
   | { code: "ATTRIBUTE_HAS_MULTIPLE_OWNERS"; attributeId: NodeId }
   | { code: "MULTIPLE_UNIQUE"; entityId: NodeId }
   | { code: "WEAK_ENTITY_NEEDS_IDENTIFYING_RELATIONSHIP"; entityId: NodeId }
   | { code: "IDENTIFYING_RELATIONSHIP_NEEDS_WEAK_ENTITY"; relationshipId: NodeId }
   | { code: "RELATIONSHIP_NEEDS_TWO_ENTITIES"; relationshipId: NodeId };
-
-export const isValidCardinality = (c: Cardinality): boolean => {
-  if (c.kind === "one" || c.kind === "many") return true;
-  if (c.kind === "minMax") {
-    if (c.min < 0) return false;
-    if (c.max !== "N" && c.max < c.min) return false;
-    return true;
-  }
-  return false;
-};
 
 const ownersOfAttribute = (model: ERDModel, attributeId: NodeId): Edge[] =>
   Object.values(model.edges).filter(
@@ -142,8 +130,6 @@ export const validateModel = (model: ERDModel): ValidationError[] => {
         errors.push({ code: "UNKNOWN_NODE", id: edge.entityId });
       if (!model.relationships[edge.relationshipId])
         errors.push({ code: "UNKNOWN_NODE", id: edge.relationshipId });
-      if (!isValidCardinality(edge.cardinality))
-        errors.push({ code: "INVALID_CARDINALITY", reason: "out of range" });
     } else if (edge.kind === "entityAttribute") {
       if (!model.entities[edge.entityId])
         errors.push({ code: "UNKNOWN_NODE", id: edge.entityId });

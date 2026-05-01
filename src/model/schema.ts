@@ -2,15 +2,15 @@ import { z } from "zod";
 import type { ERDModel } from "./types";
 
 const positionSchema = z.object({ x: z.number(), y: z.number() });
-
-const cardinalitySchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("one") }),
-  z.object({ kind: z.literal("many"), symbol: z.union([z.literal("N"), z.literal("M")]) }),
-  z.object({
-    kind: z.literal("minMax"),
-    min: z.number().int().nonnegative(),
-    max: z.union([z.number().int().nonnegative(), z.literal("N")]),
-  }),
+const participationSchema = z.union([
+  z.literal("mandatory"),
+  z.literal("optional"),
+  z.literal("unspecified"),
+]);
+const cardinalitySchema = z.union([
+  z.literal("one"),
+  z.literal("many"),
+  z.literal("unspecified"),
 ]);
 
 const entitySchema = z.object({
@@ -40,7 +40,9 @@ const edgeSchema = z.discriminatedUnion("kind", [
     kind: z.literal("participation"),
     entityId: z.string(),
     relationshipId: z.string(),
+    participation: participationSchema,
     cardinality: cardinalitySchema,
+    role: z.string(),
   }),
   z.object({
     id: z.string(),

@@ -5,9 +5,10 @@ import {
   Entity,
   ERDModel,
   NodeId,
+  Participation,
   Relationship,
 } from "./types";
-import { isValidCardinality, ValidationError } from "./validation";
+import { ValidationError } from "./validation";
 
 export type ActionResult =
   | { ok: true; model: ERDModel }
@@ -116,34 +117,23 @@ export const connectEntityToRelationship = (
   input: {
     entityId: NodeId;
     relationshipId: NodeId;
-    cardinality: Cardinality;
+    participation?: Participation;
+    cardinality?: Cardinality;
+    role?: string;
   },
 ): ActionResult => {
   if (!model.entities[input.entityId])
     return fail({ code: "UNKNOWN_NODE", id: input.entityId });
   if (!model.relationships[input.relationshipId])
     return fail({ code: "UNKNOWN_NODE", id: input.relationshipId });
-  if (!isValidCardinality(input.cardinality))
-    return fail({ code: "INVALID_CARDINALITY", reason: "out of range" });
-  if (
-    edgeExists(
-      model,
-      (e) =>
-        e.kind === "participation" &&
-        e.entityId === input.entityId &&
-        e.relationshipId === input.relationshipId,
-    )
-  )
-    return fail({
-      code: "DUPLICATE_EDGE",
-      reason: "entity already participates in this relationship",
-    });
   const edge: Edge = {
     id: newId(),
     kind: "participation",
     entityId: input.entityId,
     relationshipId: input.relationshipId,
-    cardinality: input.cardinality,
+    participation: input.participation ?? "unspecified",
+    cardinality: input.cardinality ?? "unspecified",
+    role: input.role ?? "",
   };
   return ok({ ...model, edges: { ...model.edges, [edge.id]: edge } });
 };
@@ -207,6 +197,26 @@ export const attachAttributeToRelationship = (
   return ok({ ...model, edges: { ...model.edges, [edge.id]: edge } });
 };
 
+export const setParticipation = (
+  model: ERDModel,
+  input: { edgeId: NodeId; participation: Participation },
+): ActionResult => {
+  const edge = model.edges[input.edgeId];
+  if (!edge) return fail({ code: "UNKNOWN_NODE", id: input.edgeId });
+  if (edge.kind !== "participation")
+    return fail({
+      code: "ILLEGAL_EDGE",
+      reason: "participation only applies to entity-relationship edges",
+    });
+  return ok({
+    ...model,
+    edges: {
+      ...model.edges,
+      [edge.id]: { ...edge, participation: input.participation },
+    },
+  });
+};
+
 export const setCardinality = (
   model: ERDModel,
   input: { edgeId: NodeId; cardinality: Cardinality },
@@ -218,14 +228,29 @@ export const setCardinality = (
       code: "ILLEGAL_EDGE",
       reason: "cardinality only applies to entity-relationship edges",
     });
-  if (!isValidCardinality(input.cardinality))
-    return fail({ code: "INVALID_CARDINALITY", reason: "out of range" });
   return ok({
     ...model,
     edges: {
       ...model.edges,
       [edge.id]: { ...edge, cardinality: input.cardinality },
     },
+  });
+};
+
+export const setRole = (
+  model: ERDModel,
+  input: { edgeId: NodeId; role: string },
+): ActionResult => {
+  const edge = model.edges[input.edgeId];
+  if (!edge) return fail({ code: "UNKNOWN_NODE", id: input.edgeId });
+  if (edge.kind !== "participation")
+    return fail({
+      code: "ILLEGAL_EDGE",
+      reason: "role only applies to entity-relationship edges",
+    });
+  return ok({
+    ...model,
+    edges: { ...model.edges, [edge.id]: { ...edge, role: input.role } },
   });
 };
 
